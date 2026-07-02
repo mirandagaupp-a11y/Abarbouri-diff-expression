@@ -1,0 +1,2043 @@
+##### salmon shell code to sbatch
+spack load /vacau76
+
+cd /work/projects/5-39268/mgaupp42/transcriptome_assembly/evigene_final/cdhit/
+salmon index -t ./Abar_trinity_spades.95.unitigs.fasta -i index
+
+export MY_FOLDER=/work/projects/5-39268/mgaupp42/diff_express/salmon/
+cd ${MY_FOLDER}
+
+# array is zero-indexed
+file_array=(WILS_FG_1_3 WILS_FG_1_8 WILS_FG_1_9 WILS_FG_2_9 WILS_FG_2_10 WILS_FG_2_15 WILS_FG_3_10 WILS_FG_3_11 WILS_FG_3_14 \
+  WILS_RW_1_3 WILS_RW_1_4 WILS_RW_1_6 WILS_RW_2_3 WILS_RW_2_4 WILS_RW_2_5 WILS_FG_1_13 WILS_FG_1_15 WILS_FG_1_17 WILS_FG_2_1 \
+  WILS_FG_2_2 WILS_FG_2_3 WILS_FG_3_2 WILS_FG_3_3 WILS_FG_3_4 WILS_RW_1_7 WILS_RW_1_8 WILS_RW_1_9 WILS_RW_2_12 WILS_RW_2_13 \
+  WILS_RW_2_14 RUTH_LCC_2_2 RUTH_LCC_2_3 RUTH_LCC_2_4 RUTH_LCC_2_8 RUTH_LCC_1_3 RUTH_LCC_1_5 RUTH_LCC_1_8 RUTH_LCC_1_10 \
+  RUTH_LCC_1_12 RUTH_LCC_1_14 RUTH_LCC_2_10 RUTH_LCC_2_11 RUTH_LCC_2_12 RUTH_LCC_2_13 BOON_WALT_2_2 BOON_WALT_2_4 \
+  BOON_WALT_2_5 BOON_WALT_2_8 BOON_WALT_2_10 BOON_WALT_2_11 BOON_WALT_3_3 BOON_WALT_3_5 BOON_WALT_3_6 \
+  BOON_WALT_3_7 BOON_WALT_3_8 BOON_WALT_3_10 SCOT_JAM_1_1 SCOT_JAM_1_2 SCOT_JAM_1_5 SCOT_JAM_1_7 SCOT_JAM_1_8 \
+  SCOT_JAM_1_11 SCOT_JAM_2_2 SCOT_JAM_2_5 SCOT_JAM_2_6 SCOT_JAM_2_8 SCOT_JAM_2_10 SCOT_JAM_2_11 \
+  PREB_HW_1_3 PREB_HW_1_5 PREB_HW_1_7 PREB_HW_1_8 PREB_HW_1_9 PREB_HW_2_3 PREB_HW_2_5 PREB_HW_2_2 \
+  PREB_HW_2_8 PREB_HW_2_9 PREB_HW_2_10)
+
+export sample=${file_array[${SLURM_ARRAY_TASK_ID}]}
+export data=/work/projects/5-39268/mgaupp42/transcriptome_assembly/rcorrector/
+
+salmon quant -i ${MY_FOLDER}/index -l A --gcBias -p 20 -o ${MY_FOLDER}/${sample} \
+    -1 ${data}${sample}.R1.cor.fq -2 ${data}${sample}.R2.cor.fq 
+
+
+#####create a gene counts matrix istead of a transcript counts matrix and run deseq in R
+
+# Load necessary libraries
+library(tximport)
+library(readr)
+library(DESeq2)
+library(dplyr)
+library(pheatmap)
+library(ggplot2)
+library(RColorBrewer)
+library(vegan)
+
+
+# Define the directory containing the Salmon quant files
+quant_dir <- "/work/projects/5-39268/mgaupp42/diff_express/salmon/"
+
+# List all .sf files recursively
+files <- list.files(quant_dir, pattern = "\\.sf$", full.names = TRUE, recursive = TRUE)
+
+# Create a sample table
+# Assuming you have a metadata file with sample names and conditions
+metadata <- read.csv("/work/projects/5-39268/mgaupp42/diff_express/salmon/metadata.csv") # Adjust the path to your metadata file
+
+# Ensure the metadata file has columns: sampleName, condition
+# sampleName should match the names of the .sf files (without the .sf extension)
+
+# Create a named vector of files
+names(files) <- gsub("\\.sf$", "", basename(files))
+
+# Read the transcript-to-gene mapping file
+# Adjust the path and delimiter as needed
+tx2gene <- read.table("/work/projects/5-39268/mgaupp42/diff_express/salmon/gene_to_trans_map.txt", header = FALSE, sep = "\t") # Use sep = "\t" for tab-delimited files
+
+# Swap the columns to ensure the first column is transcripts and the second is genes
+tx2gene <- tx2gene[, c(2, 1)]
+
+# Assign column names manually
+colnames(tx2gene) <- c("transcript", "gene")
+
+# Import Salmon quant files using tximport with tx2gene
+txi <- tximport(files, type = "salmon", tx2gene = tx2gene)
+
+# Save txi for reuse
+#### This is what gets used for all other deseq runs
+saveRDS(txi, file = "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/txi_genelevel.rds")
+
+#### Deseq for PCoA ####
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/txi_genelevel.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds_txi <- DESeq(ddsTxi_temp)
+save(dds_txi, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/population/temp_deseq_object.RData")
+
+# Variance stabilizing transformation
+vsd <- vst(dds_txi, blind = TRUE)
+vst_mat <- assay(vsd)
+
+samp$Sample <- rownames(samp)
+
+# Euclidean distance among samples
+sample_dist <- dist(t(vst_mat), method = "euclidean")
+
+# PCoA
+pcoa_sample <- capscale(sample_dist ~ 1)
+pcoa_scores <- scores(pcoa_sample)$sites
+
+eigvals <- eigenvals(pcoa_sample)
+var_explained <- eigvals / sum(eigvals) * 100
+
+# Prepare plotting dataframe
+pcoa_df <- data.frame(
+  Sample = rownames(pcoa_scores),
+  PCoA1 = pcoa_scores[,1],
+  PCoA2 = pcoa_scores[,2]
+) %>%
+  left_join(samp, by = "Sample")
+
+# Rename populations for plotting
+pcoa_df <- pcoa_df %>% mutate(Population = recode(Population, "BOON" = "Boone", "PREB" = "Preble", "RUTH" = "Rutherford", "SCOT" = "Scott", "WILS_FG" = "Wilson1", "WILS_RW" = "Wilson2"))
+
+# Set population order in legend
+pcoa_df$Population <- factor(pcoa_df$Population, levels = c("Preble", "Boone", "Scott", "Wilson1", "Wilson2", "Rutherford"))
+
+# Color matching 
+population_colors <- c("Preble" = "#E41A1C","Boone" = "#377EB8", "Scott" = "#4DAF4A", "Wilson1" = "#984EA3", "Wilson2" = "#FF7F00", "Rutherford" = "#999999")
+
+# Export as JPEG
+jpeg("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/population/sample_pcoa_pop_TEST.jpeg", width = 2400, height = 2000, res = 300)
+
+ggplot(pcoa_df, aes(x = PCoA1, y = PCoA2, color = Population, shape = Temperature)) +
+  geom_point(size = 4) + scale_color_manual(values = population_colors) +
+ scale_shape_manual(values = c("10C" = 16, "20C" = 17)) +
+  labs(x = paste0("PCoA1 (", round(var_explained[1], 1), "%)"),
+    y = paste0("PCoA2 (", round(var_explained[2], 1), "%)")
+  ) +
+  theme_bw(base_size = 12)
+
+dev.off()
+
+################################################################# subset the txi rds object to create separate rds objects for each populations
+
+# Load necessary libraries
+library(tximport)
+
+# Load tximport object
+txi <- readRDS(
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/txi_genelevel.rds"
+)
+
+# Define the individuals you want to include
+   
+individuals_to_include <- c("WILS_RW_1_3", "WILS_RW_1_4", "WILS_RW_1_6", "WILS_RW_2_3", "WILS_RW_2_4", "WILS_RW_2_5", "WILS_RW_1_7", "WILS_RW_1_8", "WILS_RW_1_9",
+    "WILS_RW_2_12", "WILS_RW_2_13", "WILS_RW_2_14")
+
+# Subset tximport object
+txi_subset <- txi
+
+txi_subset$counts <-
+  txi$counts[, individuals_to_include, drop = FALSE]
+
+txi_subset$abundance <-
+  txi$abundance[, individuals_to_include, drop = FALSE]
+
+txi_subset$length <-
+  txi$length[, individuals_to_include, drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/WILS_RW_txi_subset.rds"
+)
+
+### PREB
+individuals_to_include <- c("PREB_HW_1_3", "PREB_HW_1_5", "PREB_HW_1_7", "PREB_HW_1_8", "PREB_HW_1_9", "PREB_HW_2_3", "PREB_HW_2_5",
+    "PREB_HW_2_2", "PREB_HW_2_8", "PREB_HW_2_9", "PREB_HW_2_10")
+
+# Subset tximport object
+txi_subset <- txi
+
+txi_subset$counts <-
+  txi$counts[, individuals_to_include, drop = FALSE]
+
+txi_subset$abundance <-
+  txi$abundance[, individuals_to_include, drop = FALSE]
+
+txi_subset$length <-
+  txi$length[, individuals_to_include, drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/PREB_txi_subset.rds"
+)
+
+individuals_to_include <- c("BOON_WALT_2_2", "BOON_WALT_2_4", "BOON_WALT_2_5", "BOON_WALT_2_8", "BOON_WALT_2_10", "BOON_WALT_2_11", "BOON_WALT_3_3", "BOON_WALT_3_5",
+    "BOON_WALT_3_6", "BOON_WALT_3_7", "BOON_WALT_3_8", "BOON_WALT_3_10")
+    
+# Subset tximport object
+txi_subset <- txi
+
+txi_subset$counts <-
+  txi$counts[, individuals_to_include, drop = FALSE]
+
+txi_subset$abundance <-
+  txi$abundance[, individuals_to_include, drop = FALSE]
+
+txi_subset$length <-
+  txi$length[, individuals_to_include, drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/BOON_txi_subset.rds"
+)
+
+individuals_to_include <- c("SCOT_JAM_1_1", "SCOT_JAM_1_2", "SCOT_JAM_1_5", "SCOT_JAM_1_7", "SCOT_JAM_1_8", "SCOT_JAM_1_11", "SCOT_JAM_2_2", "SCOT_JAM_2_5", "SCOT_JAM_2_6",
+    "SCOT_JAM_2_8", "SCOT_JAM_2_10", "SCOT_JAM_2_11")
+
+# Subset tximport object
+txi_subset <- txi
+
+txi_subset$counts <-
+  txi$counts[, individuals_to_include, drop = FALSE]
+
+txi_subset$abundance <-
+  txi$abundance[, individuals_to_include, drop = FALSE]
+
+txi_subset$length <-
+  txi$length[, individuals_to_include, drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/SCOT_txi_subset.rds"
+)
+   
+individuals_to_include <- c("WILS_FG_1_3", "WILS_FG_1_8", "WILS_FG_1_9", "WILS_FG_2_9", "WILS_FG_2_10", "WILS_FG_2_15", "WILS_FG_3_10", "WILS_FG_3_11", "WILS_FG_3_14",
+    "WILS_FG_1_13", "WILS_FG_1_15", "WILS_FG_1_17", "WILS_FG_2_1", "WILS_FG_2_2", "WILS_FG_2_3", "WILS_FG_3_2", "WILS_FG_3_3", "WILS_FG_3_4")
+
+# Subset tximport object
+txi_subset <- txi
+
+txi_subset$counts <-
+  txi$counts[, individuals_to_include, drop = FALSE]
+
+txi_subset$abundance <-
+  txi$abundance[, individuals_to_include, drop = FALSE]
+
+txi_subset$length <-
+  txi$length[, individuals_to_include, drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/WILS_FG_txi_subset.rds"
+)
+
+individuals_to_include <- c("RUTH_LCC_2_2", "RUTH_LCC_2_3", "RUTH_LCC_2_4", "RUTH_LCC_2_8", "RUTH_LCC_1_3", "RUTH_LCC_1_5", "RUTH_LCC_1_8", "RUTH_LCC_1_10", "RUTH_LCC_1_12",
+    "RUTH_LCC_1_14", "RUTH_LCC_2_10", "RUTH_LCC_2_11", "RUTH_LCC_2_12", "RUTH_LCC_2_13")
+
+# Subset tximport object
+txi_subset <- txi
+
+txi_subset$counts <-
+  txi$counts[, individuals_to_include, drop = FALSE]
+
+txi_subset$abundance <-
+  txi$abundance[, individuals_to_include, drop = FALSE]
+
+txi_subset$length <-
+  txi$length[, individuals_to_include, drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/RUTH_txi_subset.rds"
+)
+ 
+
+############################################################################# run DESeq for each population
+
+library(DESeq2)
+library(dplyr)
+library(tximport)
+
+################### Preble
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/PREB_txi_subset.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/preb_metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds <- DESeq(ddsTxi_temp)
+
+results <- results(dds)
+
+write.csv(results,"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/PREB_20vs10_deseq_results.csv", quote=FALSE)
+
+save(dds, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/PREB_20vs10_deseq_object.RData")
+
+upreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange >= 2 & results$padj<0.01,])
+
+downreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange <= -2 & results$padj<0.01,])
+
+write.table(upreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/PREB_20vs10_up_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+write.table(downreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/PREB_20vs10_down_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+###################### Boone
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/BOON_txi_subset.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/boon_metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds <- DESeq(ddsTxi_temp)
+
+results <- results(dds)
+
+write.csv(results,"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/BOON_20vs10_deseq_results.csv", quote=FALSE)
+
+save(dds, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/BOON_20vs10_deseq_object.RData")
+
+upreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange >= 2 & results$padj<0.01,])
+
+downreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange <= -2 & results$padj<0.01,])
+
+write.table(upreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/BOON_20vs10_up_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+write.table(downreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/BOON_20vs10_down_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+###################### Scott
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/SCOT_txi_subset.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/scot_metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds <- DESeq(ddsTxi_temp)
+
+results <- results(dds)
+
+write.csv(results,"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/SCOT_20vs10_deseq_results.csv", quote=FALSE)
+
+save(dds, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/SCOT_20vs10_deseq_object.RData")
+
+upreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange >= 2 & results$padj<0.01,])
+
+downreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange <= -2 & results$padj<0.01,])
+
+write.table(upreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/SCOT_20vs10_up_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+write.table(downreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/SCOT_20vs10_down_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+##################### WILS FG
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/WILS_FG_txi_subset.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wils_fg_metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds <- DESeq(ddsTxi_temp)
+
+results <- results(dds)
+
+write.csv(results,"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/WILS_FG_20vs10_deseq_results.csv", quote=FALSE)
+
+save(dds, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/WILS_FG_20vs10_deseq_object.RData")
+
+upreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange >= 2 & results$padj<0.01,])
+
+downreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange <= -2 & results$padj<0.01,])
+
+write.table(upreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/WILS_FG_20vs10_up_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+write.table(downreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/WILS_FG_20vs10_down_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+##################### WILS RW
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/WILS_RW_txi_subset.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wils_rw_metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds <- DESeq(ddsTxi_temp)
+
+results <- results(dds)
+
+write.csv(results,"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/WILS_RW_20vs10_deseq_results.csv", quote=FALSE)
+
+save(dds, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/WILS_RW_20vs10_deseq_object.RData")
+
+upreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange >= 2 & results$padj<0.01,])
+
+downreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange <= -2 & results$padj<0.01,])
+
+write.table(upreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/WILS_RW_20vs10_up_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+write.table(downreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/WILS_RW_20vs10_down_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+##################### RUTH
+txi <- readRDS("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/RUTH_txi_subset.rds")
+samp <- as.data.frame(read.csv("/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/ruth_metadata.csv", head = T, row.names=1))
+
+# design is Temp because if using Population design, we have to set a reference population
+ddsTxi_temp <- DESeqDataSetFromTximport(txi,
+                                   colData = samp,
+                                   design = ~ Temperature)
+
+ddsTxi_temp$Temperature <- relevel(ddsTxi_temp$Temperature, ref = "10C")
+
+dds <- DESeq(ddsTxi_temp)
+
+results <- results(dds)
+
+write.csv(results,"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/RUTH_20vs10_deseq_results.csv", quote=FALSE)
+
+save(dds, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/RUTH_20vs10_deseq_object.RData")
+
+upreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange >= 2 & results$padj<0.01,])
+
+downreg<-row.names(results[!is.na(results$padj) & results$log2FoldChange <= -2 & results$padj<0.01,])
+
+write.table(upreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/RUTH_20vs10_up_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+write.table(downreg, file="/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/RUTH_20vs10_down_regulated_genes.txt", sep = "\t", quote = FALSE, col.names = F, row.names = F )
+
+
+############################################################################ supset the txi rds object for only genes that were significantly differentially expressed for the permanova
+# Load necessary libraries
+library(tximport)
+
+# Read the tximport object
+txi <- readRDS(
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/txi_genelevel.rds"
+)
+
+# Read the list of genes to include
+genes_to_include <- readLines(
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/degs/all_degs.txt"
+)
+
+# Find genes present in txi
+genes_keep <- intersect(rownames(txi$counts), genes_to_include)
+
+# Subset all tximport matrices consistently
+txi_subset <- txi
+
+txi_subset$counts <- txi$counts[genes_keep, , drop = FALSE]
+txi_subset$abundance <- txi$abundance[genes_keep, , drop = FALSE]
+txi_subset$length <- txi$length[genes_keep, , drop = FALSE]
+
+# Save subsetted tximport object
+saveRDS(
+  txi_subset,
+  "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/permanova/genelevel_permanova_subset.rds"
+)
+
+
+################################################################################### run permanova
+
+library(DESeq2)
+library(tximport)
+library(vegan)
+
+# Load subsetted tximport object
+txi <- readRDS(
+"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/permanova/genelevel_permanova_subset.rds"
+)
+
+# Metadata
+samp <- read.csv(
+"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/metadata.csv",
+header = TRUE,
+row.names = 1
+)
+
+# Match order
+txi$counts <- txi$counts[, rownames(samp)]
+
+# Construct DESeq object
+dds <- DESeqDataSetFromTximport(
+txi,
+colData = samp,
+design = ~ 1
+)
+
+# Estimate size factors only
+dds <- estimateSizeFactors(dds)
+
+# Variance-stabilized expression
+vsd <- vst(dds, blind = TRUE)
+
+expr <- assay(vsd)
+
+# Factors
+samp$Population <- factor(samp$Population)
+samp$Temperature <- factor(samp$Temperature)
+samp$Clutch <- factor(samp$Clutch)
+samp$RangeUnit <- factor(samp$RangeUnit)
+
+# Distance
+sample_dist <- dist(t(expr), method = "euclidean")
+
+# PERMANOVA
+permanova_res <- adonis2(
+sample_dist ~ RangeUnit + Population + Temperature +
+Population:Temperature + Clutch,
+data = samp,
+by = "terms",
+permutations = 999
+)
+
+write.csv(
+as.data.frame(permanova_res),
+"/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/permanova/permanova_results.csv",
+quote = FALSE
+)
+
+################################################################################################## subset top log2FC genes
+
+# Output directory
+out_dir <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results"
+
+# Input files and population names
+files <- c(
+  RUTH = file.path(out_dir, "RUTH_20vs10_deseq_results.csv"),
+  RW   = file.path(out_dir, "WILS_RW_20vs10_deseq_results.csv"),
+  FG   = file.path(out_dir, "WILS_FG_20vs10_deseq_results.csv"),
+  SCOT = file.path(out_dir, "SCOT_20vs10_deseq_results.csv"),
+  BOON = file.path(out_dir, "BOON_20vs10_deseq_results.csv"),
+  PREB = file.path(out_dir, "PREB_20vs10_deseq_results.csv")
+)
+
+for (pop in names(files)) {
+  
+  # Load DESeq2 results
+  data <- read.csv(files[pop], row.names = 1)
+  
+  # Add gene IDs as a column
+  data$gene_id <- rownames(data)
+  
+  # Keep only significant genes and sort by absolute log2FoldChange
+  sig_large_logFC <- data[!is.na(data$padj) & data$padj <= 0.01, ]
+  sig_large_logFC <- sig_large_logFC[order(-abs(sig_large_logFC$log2FoldChange)), ]
+  
+  # Save all significant genes sorted by absolute log2FoldChange
+  write.csv(
+    sig_large_logFC,
+    file.path(out_dir, paste0(pop, "_padj0.01_sorted_abs_log2FoldChange.csv")),
+    row.names = FALSE
+  )
+  
+  # Save top 20 significant genes by absolute log2FoldChange
+  top100 <- head(sig_large_logFC, 20)
+  
+  write.csv(
+    top100,
+    file.path(out_dir, paste0(pop, "_top20_padj0.01_abs_log2FoldChange.csv")),
+    row.names = FALSE
+  )
+  
+  # Print summary
+  cat(pop, "\n")
+  cat("Significant genes padj <= 0.01:", nrow(sig_large_logFC), "\n")
+  cat("Top abs(log2FoldChange):", max(abs(sig_large_logFC$log2FoldChange), na.rm = TRUE), "\n\n")
+}
+
+
+#################################################################################################### pull annotations for genes from trinotate file 
+###### I ran this separately for each population as well as for all of the significant DEGS, just change input and output file names 
+
+library(readr)
+library(dplyr)
+
+# Input files
+deg_file <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/RUTH_top20_genes.txt"
+trinotate_file <- "/work/projects/5-39268/mgaupp42/transcriptome_assembly/trinotate_post_ncbi/one_trans_per_gene_annotation_filtered.tsv"
+
+# Read DEG IDs (one per line)
+deg_ids <- read_lines(deg_file)
+
+# Read Trinotate annotations
+trinotate <- read_tsv(
+  trinotate_file,
+  show_col_types = FALSE
+)
+
+# Filter
+deg_annotations <- trinotate %>%
+  filter(gene_id %in% deg_ids)
+
+# Write output
+write_tsv(deg_annotations, "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/annotations/rutherford_top20_genes_annotations.tsv")
+
+# Print summary
+cat("DEG IDs:", length(deg_ids), "\n")
+cat("Annotations found:", nrow(deg_annotations), "\n")
+
+
+################################################################################################# pull homologs of wollenberg genes from A. barbouri peptide file 
+spack load blast-plus
+
+cd /work/projects/5-39268/mgaupp42/transcriptome_assembly/transdecoder/
+
+#makeblastdb -in Abar_trinity_spades.95.unitigs.fasta.transdecoder.pep -dbtype prot -parse_seqids -title "Abar_pep" -out Abar_transcriptome_pep
+
+blastp -query wollenberg_proteins_final.txt \
+       -db Abar_transcriptome_pep \
+       -evalue 1e-5 -seg yes -comp_based_stats 2 -num_alignments 1 \
+       -num_threads ${SLURM_CPUS_PER_TASK:-16} \
+       -outfmt 6 \
+       -out blastp_wollenberg_final.tsv
+
+################################################################################################ pull differential expression levels for wollenberg candidate thermal stress genes 
+
+#!/usr/bin/env Rscript
+
+# ============================
+# User-defined file paths
+# ============================
+genes_txt   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/wollenberg_genes.txt"         # text file with one gene ID per line
+input_csv   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/PREB_20vs10_deseq_results.csv" # CSV file with gene IDs in the first column
+output_tsv  <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/PREB_wb_matched_genes.tsv" # output file
+missing_out <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/PREB_genes_MISSING.txt" # missing IDs file
+
+# ============================
+# Libraries
+# ============================
+suppressWarnings(suppressMessages({
+  library(data.table)
+}))
+
+# --- 1) Read gene list ---
+genes <- unique(trimws(readLines(genes_txt, warn = FALSE)))
+genes <- genes[nzchar(genes)]
+if (length(genes) == 0) stop("No gene IDs found in the txt file.")
+
+# --- 2) Read CSV (fast, memory-friendly; handles .gz too) ---
+dt <- fread(input_csv)
+if (is.na(names(dt)[1]) || names(dt)[1] == "" || names(dt)[1] == "V1") {
+  setnames(dt, 1, "gene_id")
+} else {
+  setnames(dt, 1, "gene_id")
+}
+
+# --- 3) Filter to requested genes ---
+dt_sub <- dt[gene_id %in% genes]
+
+# --- 4) Reorder rows to match the order of the input gene list ---
+dt_sub[, gene_order := match(gene_id, genes)]
+setorder(dt_sub, gene_order)
+dt_sub[, gene_order := NULL]
+
+# --- 5) Write outputs ---
+fwrite(dt_sub, output_tsv, sep = "\t", quote = FALSE, na = "NA")
+
+not_found <- setdiff(genes, dt_sub$gene_id)
+if (length(not_found) > 0) {
+  writeLines(not_found, con = missing_out)
+  message(sprintf("Wrote %d matched rows to %s", nrow(dt_sub), output_tsv))
+  message(sprintf("Wrote %d missing gene IDs to %s", length(not_found), missing_out))
+} else {
+  if (file.exists(missing_out)) unlink(missing_out)
+  message(sprintf("Wrote %d matched rows to %s; all gene IDs were found.", nrow(dt_sub), output_tsv))
+}
+
+################## Boone
+genes_txt   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/wollenberg_genes.txt"         # text file with one gene ID per line
+input_csv   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/BOON_20vs10_deseq_results.csv" # CSV file with gene IDs in the first column
+output_tsv  <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/BOON_wb_matched_genes.tsv" # output file
+missing_out <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/BOON_genes_MISSING.txt" # missing IDs file
+
+# ============================
+# Libraries
+# ============================
+suppressWarnings(suppressMessages({
+  library(data.table)
+}))
+
+# --- 1) Read gene list ---
+genes <- unique(trimws(readLines(genes_txt, warn = FALSE)))
+genes <- genes[nzchar(genes)]
+if (length(genes) == 0) stop("No gene IDs found in the txt file.")
+
+# --- 2) Read CSV (fast, memory-friendly; handles .gz too) ---
+dt <- fread(input_csv)
+if (is.na(names(dt)[1]) || names(dt)[1] == "" || names(dt)[1] == "V1") {
+  setnames(dt, 1, "gene_id")
+} else {
+  setnames(dt, 1, "gene_id")
+}
+
+# --- 3) Filter to requested genes ---
+dt_sub <- dt[gene_id %in% genes]
+
+# --- 4) Reorder rows to match the order of the input gene list ---
+dt_sub[, gene_order := match(gene_id, genes)]
+setorder(dt_sub, gene_order)
+dt_sub[, gene_order := NULL]
+
+# --- 5) Write outputs ---
+fwrite(dt_sub, output_tsv, sep = "\t", quote = FALSE, na = "NA")
+
+not_found <- setdiff(genes, dt_sub$gene_id)
+if (length(not_found) > 0) {
+  writeLines(not_found, con = missing_out)
+  message(sprintf("Wrote %d matched rows to %s", nrow(dt_sub), output_tsv))
+  message(sprintf("Wrote %d missing gene IDs to %s", length(not_found), missing_out))
+} else {
+  if (file.exists(missing_out)) unlink(missing_out)
+  message(sprintf("Wrote %d matched rows to %s; all gene IDs were found.", nrow(dt_sub), output_tsv))
+}
+
+############## Scott
+genes_txt   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/wollenberg_genes.txt"         # text file with one gene ID per line
+input_csv   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/SCOT_20vs10_deseq_results.csv" # CSV file with gene IDs in the first column
+output_tsv  <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/SCOT_wb_matched_genes.tsv" # output file
+missing_out <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/SCOT_genes_MISSING.txt" # missing IDs file
+
+# ============================
+# Libraries
+# ============================
+suppressWarnings(suppressMessages({
+  library(data.table)
+}))
+
+# --- 1) Read gene list ---
+genes <- unique(trimws(readLines(genes_txt, warn = FALSE)))
+genes <- genes[nzchar(genes)]
+if (length(genes) == 0) stop("No gene IDs found in the txt file.")
+
+# --- 2) Read CSV (fast, memory-friendly; handles .gz too) ---
+dt <- fread(input_csv)
+if (is.na(names(dt)[1]) || names(dt)[1] == "" || names(dt)[1] == "V1") {
+  setnames(dt, 1, "gene_id")
+} else {
+  setnames(dt, 1, "gene_id")
+}
+
+# --- 3) Filter to requested genes ---
+dt_sub <- dt[gene_id %in% genes]
+
+# --- 4) Reorder rows to match the order of the input gene list ---
+dt_sub[, gene_order := match(gene_id, genes)]
+setorder(dt_sub, gene_order)
+dt_sub[, gene_order := NULL]
+
+# --- 5) Write outputs ---
+fwrite(dt_sub, output_tsv, sep = "\t", quote = FALSE, na = "NA")
+
+not_found <- setdiff(genes, dt_sub$gene_id)
+if (length(not_found) > 0) {
+  writeLines(not_found, con = missing_out)
+  message(sprintf("Wrote %d matched rows to %s", nrow(dt_sub), output_tsv))
+  message(sprintf("Wrote %d missing gene IDs to %s", length(not_found), missing_out))
+} else {
+  if (file.exists(missing_out)) unlink(missing_out)
+  message(sprintf("Wrote %d matched rows to %s; all gene IDs were found.", nrow(dt_sub), output_tsv))
+}
+
+
+######################## WILS FG
+genes_txt   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/wollenberg_genes.txt"         # text file with one gene ID per line
+input_csv   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/WILS_FG_20vs10_deseq_results.csv" # CSV file with gene IDs in the first column
+output_tsv  <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/WILS_FG_wb_matched_genes.tsv" # output file
+missing_out <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/WILS_FG_genes_MISSING.txt" # missing IDs file
+
+# ============================
+# Libraries
+# ============================
+suppressWarnings(suppressMessages({
+  library(data.table)
+}))
+
+# --- 1) Read gene list ---
+genes <- unique(trimws(readLines(genes_txt, warn = FALSE)))
+genes <- genes[nzchar(genes)]
+if (length(genes) == 0) stop("No gene IDs found in the txt file.")
+
+# --- 2) Read CSV (fast, memory-friendly; handles .gz too) ---
+dt <- fread(input_csv)
+if (is.na(names(dt)[1]) || names(dt)[1] == "" || names(dt)[1] == "V1") {
+  setnames(dt, 1, "gene_id")
+} else {
+  setnames(dt, 1, "gene_id")
+}
+
+# --- 3) Filter to requested genes ---
+dt_sub <- dt[gene_id %in% genes]
+
+# --- 4) Reorder rows to match the order of the input gene list ---
+dt_sub[, gene_order := match(gene_id, genes)]
+setorder(dt_sub, gene_order)
+dt_sub[, gene_order := NULL]
+
+# --- 5) Write outputs ---
+fwrite(dt_sub, output_tsv, sep = "\t", quote = FALSE, na = "NA")
+
+not_found <- setdiff(genes, dt_sub$gene_id)
+if (length(not_found) > 0) {
+  writeLines(not_found, con = missing_out)
+  message(sprintf("Wrote %d matched rows to %s", nrow(dt_sub), output_tsv))
+  message(sprintf("Wrote %d missing gene IDs to %s", length(not_found), missing_out))
+} else {
+  if (file.exists(missing_out)) unlink(missing_out)
+  message(sprintf("Wrote %d matched rows to %s; all gene IDs were found.", nrow(dt_sub), output_tsv))
+}
+
+
+##################### WILS_RW
+genes_txt   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/wollenberg_genes.txt"         # text file with one gene ID per line
+input_csv   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/WILS_RW_20vs10_deseq_results.csv" # CSV file with gene IDs in the first column
+output_tsv  <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/WILS_RW_wb_matched_genes.tsv" # output file
+missing_out <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/WILS_RW_genes_MISSING.txt" # missing IDs file
+
+# ============================
+# Libraries
+# ============================
+suppressWarnings(suppressMessages({
+  library(data.table)
+}))
+
+# --- 1) Read gene list ---
+genes <- unique(trimws(readLines(genes_txt, warn = FALSE)))
+genes <- genes[nzchar(genes)]
+if (length(genes) == 0) stop("No gene IDs found in the txt file.")
+
+# --- 2) Read CSV (fast, memory-friendly; handles .gz too) ---
+dt <- fread(input_csv)
+if (is.na(names(dt)[1]) || names(dt)[1] == "" || names(dt)[1] == "V1") {
+  setnames(dt, 1, "gene_id")
+} else {
+  setnames(dt, 1, "gene_id")
+}
+
+# --- 3) Filter to requested genes ---
+dt_sub <- dt[gene_id %in% genes]
+
+# --- 4) Reorder rows to match the order of the input gene list ---
+dt_sub[, gene_order := match(gene_id, genes)]
+setorder(dt_sub, gene_order)
+dt_sub[, gene_order := NULL]
+
+# --- 5) Write outputs ---
+fwrite(dt_sub, output_tsv, sep = "\t", quote = FALSE, na = "NA")
+
+not_found <- setdiff(genes, dt_sub$gene_id)
+if (length(not_found) > 0) {
+  writeLines(not_found, con = missing_out)
+  message(sprintf("Wrote %d matched rows to %s", nrow(dt_sub), output_tsv))
+  message(sprintf("Wrote %d missing gene IDs to %s", length(not_found), missing_out))
+} else {
+  if (file.exists(missing_out)) unlink(missing_out)
+  message(sprintf("Wrote %d matched rows to %s; all gene IDs were found.", nrow(dt_sub), output_tsv))
+}
+
+
+#################### RUTH
+genes_txt   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/wollenberg_genes.txt"         # text file with one gene ID per line
+input_csv   <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/results/RUTH_20vs10_deseq_results.csv" # CSV file with gene IDs in the first column
+output_tsv  <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/RUTH_wb_matched_genes.tsv" # output file
+missing_out <- "/work/projects/5-39268/mgaupp42/diff_express/deseq/gene_level/length_correction/temp/wollenberg/RUTH_genes_MISSING.txt" # missing IDs file
+
+# ============================
+# Libraries
+# ============================
+suppressWarnings(suppressMessages({
+  library(data.table)
+}))
+
+# --- 1) Read gene list ---
+genes <- unique(trimws(readLines(genes_txt, warn = FALSE)))
+genes <- genes[nzchar(genes)]
+if (length(genes) == 0) stop("No gene IDs found in the txt file.")
+
+# --- 2) Read CSV (fast, memory-friendly; handles .gz too) ---
+dt <- fread(input_csv)
+if (is.na(names(dt)[1]) || names(dt)[1] == "" || names(dt)[1] == "V1") {
+  setnames(dt, 1, "gene_id")
+} else {
+  setnames(dt, 1, "gene_id")
+}
+
+# --- 3) Filter to requested genes ---
+dt_sub <- dt[gene_id %in% genes]
+
+# --- 4) Reorder rows to match the order of the input gene list ---
+dt_sub[, gene_order := match(gene_id, genes)]
+setorder(dt_sub, gene_order)
+dt_sub[, gene_order := NULL]
+
+# --- 5) Write outputs ---
+fwrite(dt_sub, output_tsv, sep = "\t", quote = FALSE, na = "NA")
+
+not_found <- setdiff(genes, dt_sub$gene_id)
+if (length(not_found) > 0) {
+  writeLines(not_found, con = missing_out)
+  message(sprintf("Wrote %d matched rows to %s", nrow(dt_sub), output_tsv))
+  message(sprintf("Wrote %d missing gene IDs to %s", length(not_found), missing_out))
+} else {
+  if (file.exists(missing_out)) unlink(missing_out)
+  message(sprintf("Wrote %d matched rows to %s; all gene IDs were found.", nrow(dt_sub), output_tsv))
+}
+
+####################################################################################################### R code to make deg barplot 
+library(ggplot2)
+
+# Create data frame
+counts <- data.frame(
+  County = c("Preble", "Boone", "Scott", "Wilson1", "Wilson2", "Rutherford"),
+  Up = c(404, 222, 204, 690, 703, 682),
+  Down = c(193, 684, 519, 583, 1564, 1383)
+)
+
+# Make downregulated values negative
+counts$County <- factor(counts$County, levels = c("Preble", "Boone", "Scott", "Wilson1", "Wilson2", "Rutherford"))
+counts$Down_plot <- -counts$Down
+
+q <- ggplot(counts) +
+  geom_col(aes(County, Up, fill = "Up"), color = "black", linewidth = 0.2, width = 0.9) +
+  geom_col(aes(County, Down_plot, fill = "Down"), color = "black", linewidth = 0.2, width = 0.9) +
+  geom_hline(yintercept = 0, linewidth = 0.25, color = "black") +
+  scale_fill_manual(values = c("Down" = "blue", "Up" = "grey75"),
+                    name = "Regulation") +
+  scale_y_continuous(labels = function(x) abs(x),
+                     limits = c(-1700, 1000),
+                     breaks = seq(-1500, 1000, 500)) +
+  labs(x = NULL, y = "Number of Differentially Expressed Genes") +
+  theme_classic(base_size = 14) +
+  theme(
+    panel.border = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    legend.position = "right",
+    axis.text = element_text(color = "black")
+  )
+
+q 
+
+# Save the figure
+ggsave("degs_count.jpg", q,
+       width = 9, height = 6, units = "in", dpi = 600, device = "jpeg", bg = "white")
+
+############################################################################################################ R code to make upset plot
+install.packages("UpSetR")
+library(UpSetR)
+
+degs <- read.csv("degs_by_pop.csv", stringsAsFactors = FALSE)
+
+gene_sets <- list(
+  Rutherford = na.omit(degs$Rutherford),
+  Wilson2 = na.omit(degs$Wilson2),
+  Wilson1 = na.omit(degs$Wilson1),
+  Boone = na.omit(degs$Boone),
+  Scott = na.omit(degs$Scott),
+  Preble = na.omit(degs$Preble)
+)
+
+shared_all_6 <- Reduce(intersect, gene_sets)
+shared_all_6_df <- data.frame(Gene = shared_all_6)
+
+write.csv(shared_all_6_df,
+          "genes_shared_all_6_populations.csv",
+          row.names = FALSE)
+
+jpeg("upset_plot.jpg",
+     width = 13, height = 7,
+     units = "in", res = 600)
+
+upset(
+  fromList(gene_sets),
+  sets = c("Rutherford","Wilson2", "Wilson1", "Boone", "Scott", "Preble"),
+  nsets = 6,
+  nintersects = 35,
+  keep.order = TRUE,
+  order.by = "freq",
+  decreasing = TRUE,
+  main.bar.color = "dodgerblue",
+  sets.bar.color = "orange",
+  matrix.color = "gray20",
+  point.size = 2.5,
+  line.size = 0.7,
+  mainbar.y.label = "Intersection Size",
+  sets.x.label = "Set Size",
+  text.scale = c(1.5, 1.5, 1.5, 1.5, 1.5, 1.5)
+)
+
+dev.off()
+
+#################################################################################################################### Wollenberg candidate gene plot 
+library(tidyverse)
+library(scales)
+library(ggplot2)
+
+dat <- read_csv("wollenberg_genes_final.csv", show_col_types = FALSE)
+
+pop_order <- c("Preble","Boone","Scott","Wilson1","Wilson2","Rutherford")
+
+prep_plot_df <- function(raw, direction = c("up","down")) {
+  
+  direction <- match.arg(direction)
+  
+  base <- raw %>%
+    mutate(
+      pop = factor(pop, levels = pop_order),
+      size_val = abs(log2FoldChange),
+      gene_label = gene_info,
+      sig_up = !is.na(padj) & padj <= 0.05 & log2FoldChange > 0,
+      sig_down = !is.na(padj) & padj <= 0.05 & log2FoldChange < 0
+    )
+  
+  sig_col <- if (direction == "up") "sig_up" else "sig_down"
+  
+  genes_any <- base %>%
+    group_by(gene_id) %>%
+    summarise(any_sig = any(.data[[sig_col]], na.rm = TRUE),
+              .groups = "drop") %>%
+    filter(any_sig)
+  
+  base %>%
+    inner_join(genes_any, by = "gene_id") %>%
+    mutate(
+      sig = .data[[sig_col]],
+      padj_plot = if_else(sig, padj, NA_real_)
+    ) %>%
+    filter(!is.na(size_val))
+}
+
+df_up <- prep_plot_df(dat, "up")
+df_down <- prep_plot_df(dat, "down")
+
+size_limits <- range(c(df_up$size_val, df_down$size_val), na.rm = TRUE)
+
+make_plot <- function(d, title_txt) {
+  
+  ggplot(d, aes(pop, gene_label, size = size_val)) +
+    
+    geom_point(
+      data = filter(d, sig),
+      aes(color = pmin(padj_plot, 0.05)),
+      alpha = 0.9
+    ) +
+    
+    geom_point(
+      data = filter(d, !sig),
+      color = "grey75",
+      alpha = 0.4
+    ) +
+    
+  scale_size_continuous(name = "|log2FC|", range = c(2,10), breaks = c(0.5,1,2), 
+                        limits = size_limits) +
+    
+  scale_color_gradientn(
+  name = "padj (= 0.05)",
+  colours = c("#B2182B", "#EF8A62", "#FDAE61", "#FFD000"),
+  limits = c(0, 0.05),
+  oob = squish,
+  labels = label_number(accuracy = 0.001)
+) +
+    
+    labs(
+      title = title_txt,
+      x = "pop",
+      y = NULL
+    ) +
+    
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x = element_text(angle = -45, hjust = 0, color = "black"),
+      axis.text.y = element_text(color = "black"),
+      axis.title.x = element_text(color = "black"),
+      axis.title.y = element_text(color = "black"),
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(color = "black", fill = NA)
+    )
+}
+
+p_up <- make_plot(df_up, "Candidate Stress Genes: Up")
+p_down <- make_plot(df_down, "Candidate Stress Genes: Down")
+
+p_up
+p_down
+
+ggsave("wb_DE_gene_dotplot_UP.jpg", p_up,
+       width = 6, height = 8, units = "in",
+       dpi = 600, device = "jpeg", bg = "white")
+
+ggsave("wb_DE_gene_dotplot_DOWN.jpg", p_down,
+       width = 6, height = 8, units = "in",
+       dpi = 600, device = "jpeg", bg = "white")
+
+install.packages("patchwork")
+library(patchwork)
+
+
+combined_plot <- (p_up + p_down) + plot_layout(ncol = 2, guides = "collect") &
+  theme(legend.position = "right", legend.box = "vertical", plot.margin = margin(5, 5, 5, 5))
+
+ggsave("wb_DE_gene_dotplots_combined.jpg", combined_plot,
+       width = 11, height = 8, units = "in", dpi = 600, device = "jpeg", bg = "white")
+
+####################################################################################################################### Kegg enrichment 
+
+
+library(dplyr)
+library(clusterProfiler)
+library(ggplot2)
+library(openxlsx)
+
+# Load KEGG annotation tables
+pathway2gene <- read.csv("kegg_pathway2gene.csv", header = TRUE)
+pathway2name <- read.table("kegg_pathway2name_gene", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# Human disease pathway codes   add 'ko' prefix
+human_disease_pathways <- c(
+  "05200", "05202", "05206", "05205", "05204", "05207", "05208", "05203", "05230", "05231", "05235",
+  "05210", "05212", "05225", "05226", "05214", "05216", "05221", "05220", "05217", "05218", "05211",
+  "05219", "05215", "05213", "05224", "05222", "05223", "05166", "05170", "05161", "05160", "05171",
+  "05164", "05162", "05168", "05163", "05167", "05169", "05165", "05110", "05120", "05130", "05132",
+  "05131", "05135", "05133", "05134", "05150", "05152", "05100", "05146", "05144", "05145", "05140",
+  "05142", "05143", "05310", "05322", "05323", "05320", "05321", "05330", "05332", "05340", "05010",
+  "05012", "05014", "05016", "05017", "05020", "05022", "05030", "05031", "05032", "05033", "05034",
+  "05417", "05418", "05410", "05412", "05414", "05415", "05416", "04930", "04940", "04950", "04936",
+  "04932", "04931", "04933", "04934", "01501", "01502", "01503", "01521", "01524", "01523", "01522"
+)
+
+human_disease_pathways <- paste0("ko", human_disease_pathways)
+
+# Filter out human disease pathways from pathway2name
+pathway2name_filtered2 <- pathway2name_filtered %>%
+  filter(!Pathway %in% human_disease_pathways)
+
+# Filter pathway2gene to match
+pathway2gene_filtered2 <- pathway2gene_filtered %>%
+  filter(Pathway %in% pathway2name_filtered2$Pathway)
+
+# Save filtered versions if needed
+write.table(pathway2name_filtered2, file = "kegg_pathway2name_wo_hd.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+write.table(pathway2gene_filtered2, file = "kegg_pathway2gene_wo_hd.tsv", sep = "\t", quote = FALSE, row.names = FALSE)
+
+#Read in filtered files if starting from here 
+pathway2gene_filtered <- read.table("kegg_pathway2gene_wo_hd.tsv", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+pathway2name_filtered <- read.table("kegg_pathway2name_wo_hd.tsv", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+deg_combined <- read.csv("./kegg_degs.csv")
+
+ekdegs <- compareCluster(gene_id ~ direction + pop,
+                         data = deg_combined,
+                         fun = enricher,
+                         TERM2GENE = pathway2gene_filtered,
+                         TERM2NAME = pathway2name_filtered,
+                         minGSSize = 1,
+                         maxGSSize = 10000)
+
+desired_order <- c("Preble", "Boone", "Scott", "Wilson1", 
+                   "Wilson2", "Rutherford")
+
+ekdegs@compareClusterResult$pop <- factor(ekdegs@compareClusterResult$pop, levels = desired_order)
+
+desired_order2 <- c("up", "down")
+
+ekdegs@compareClusterResult$direction <- factor(ekdegs@compareClusterResult$direction, levels = desired_order2)
+
+
+write.xlsx(as.data.frame(ekdegs), file = "kegg_comparison_enrichment_wo_hd.xlsx")
+
+
+dotplot(ekdegs, x = "pop", color = "p.adjust", showCategory = 10,
+        title = "KEGG Comparison", by = "geneRatio", size = "Count",
+        facet = "direction", label_format = 60, font.size = 12)
+
+dotplot(ekdegs, x = "pop", color = "p.adjust", showCategory = 3,
+        title = "KEGG Comparison", by = "geneRatio", size = "Count",
+        facet = "direction", label_format = 60, font.size = 12) +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+
+# If not already a dataframe:
+kegg_df <- as.data.frame(ekdegs)
+spliceosome_rows <- kegg_df %>%
+  filter(grepl("spliceosome", Description, ignore.case = TRUE))
+
+print(spliceosome_rows)
+
+# Remove any spliceosome-related entries EXCEPT for ko03041
+kegg_df_filtered <- kegg_df %>%
+  filter(!(grepl("spliceosome", Description, ignore.case = TRUE) & ID != "ko03041"))
+
+ekdegs@compareClusterResult <- kegg_df_filtered
+
+write.xlsx(kegg_df_filtered, "kegg_enrichment_filtered.xlsx")
+
+dotplot(ekdegs, x = "pop", color = "p.adjust", showCategory = 6,
+        title = "", by = "geneRatio", size = "Count",
+        facet = "direction", label_format = 60, font.size = 12) +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+
+p <- dotplot(ekdegs, x = "pop", color = "p.adjust", showCategory = 6,
+             title = "", by = "geneRatio", size = "Count",
+             facet = "direction", label_format = 60, font.size = 12) +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title.x = element_blank())
+
+ggsave("KEGG_Comparison.jpeg", plot = p,
+       device = "jpeg", dpi = 600,
+       width = 7, height =9, units = "in")
+
+# All unique input genes
+input_genes <- unique(deg_combined$gene_id)
+
+# All genes that have a KEGG annotation
+kegg_genes <- unique(pathway2gene_filtered$GID)
+
+# Genes with KEGG assignments
+assigned_genes <- intersect(input_genes, kegg_genes)
+
+cat("Input genes:", length(input_genes), "\n")
+cat("Genes with KEGG assignments:", length(assigned_genes), "\n")
+cat("Percent assigned:",
+    round(100 * length(assigned_genes) / length(input_genes), 1), "%\n")
+
+#### Running each pop separately ####
+
+deg_ruth <- read.csv("kegg_degs_ruth.csv")
+deg_rw <- read.csv("kegg_degs_wils_rw.csv")
+deg_fg <- read.csv("kegg_degs_wils_fg.csv")
+deg_scot <- read.csv("kegg_degs_scot.csv")
+deg_boon <- read.csv("kegg_degs_boon.csv")
+deg_preb <- read.csv("kegg_degs_preb.csv")
+
+## I ran this for each of the above files by changing data= each time
+ekdegs <- compareCluster(gene_id ~ direction + pop,
+                         data = deg_ruth,
+                         fun = enricher,
+                         TERM2GENE = pathway2gene_filtered,
+                         TERM2NAME = pathway2name_filtered,
+                         minGSSize = 1,
+                         maxGSSize = 1000)
+
+desired_order2 <- c("up", "down")
+
+ekdegs@compareClusterResult$direction <- factor(ekdegs@compareClusterResult$direction, levels = desired_order2)
+
+## change the file name for the correct input data
+write.xlsx(as.data.frame(ekdegs), file = "kegg_enrichment_woHD_ruth.xlsx")
+
+
+dotplot(ekdegs, x = "pop", color = "p.adjust", showCategory = 20,
+        title = "KEGG Comparison", by = "geneRatio", size = "Count",
+        facet = "direction", label_format = 60, font.size = 12)
+
+dotplot(ekdegs, x = "pop", color = "p.adjust", showCategory = 20,
+        title = "KEGG Comparison", by = "geneRatio", size = "Count",
+        facet = "direction", label_format = 60, font.size = 12) +
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+
+
+############################################################################################################################################### Go enrichment 
+install.packages("tidyverse")
+library(tidyverse)
+install.packages("readxl")
+library(readxl)
+library(xlsx)
+library(dplyr)
+install.packages("xlsx")
+
+# Read in the file
+data <- read_tsv("gene_gos2.tsv")
+
+# Extract the relevant columns
+gene_id <- data$gene_id
+#transcript_id <- data$transcript_id
+gene_ontology_blast <- data$gene_ontology_BLASTX
+gene_ontology_egg <- data$EggNM.GOs
+
+# Define a function to extract GO terms
+extract_GO_terms <- function(text) {
+  # Extract all instances of GO terms followed by exactly 7 digits
+  go_terms <- regmatches(text, gregexpr("GO:\\d{7}", text))[[1]]
+  # Concatenate the extracted GO terms with "|"
+  cleaned <- paste(go_terms, collapse = "|")
+  return(cleaned)
+}
+
+# Apply the function to the gene_ontology columns
+cleaned_gene_ontology <- sapply(gene_ontology_blast, extract_GO_terms)
+cleaned_egg <- sapply(gene_ontology_egg, extract_GO_terms)
+
+# Create a new data frame with the cleaned columns
+cleaned_data <- data.frame(gene_id = gene_id, gene_ontology_BLASTX = cleaned_gene_ontology, EggNM.GOs = cleaned_egg)
+
+# Write the updated data to a new Excel file
+write.csv(cleaned_data, "cleaned_gos.csv", row.names = FALSE)
+
+# Merge the two columns into one
+merged <- cleaned_data %>%
+  mutate(merged_go_ids = paste(gene_ontology_BLASTX, EggNM.GOs, sep = "|")) %>%
+  select(-gene_ontology_BLASTX, -EggNM.GOs)
+
+
+#remove rows that don't have GO terms 
+# Remove rows with "." in any column
+cleaned_godata <- merged %>%
+  filter(!apply(., 1, function(row) any(row == "|")))
+
+write.csv(cleaned_godata, "merged_cleaned_gos.csv", row.names = FALSE)
+#### edit the data to make it 1 gene 1 go term per line
+# Read the CSV file
+data <- read.csv("deduped_merged_gos.csv", header = TRUE)
+
+# Function to split GO terms and create a new data frame
+split_go_terms <- function(gene_id, go_terms) {
+  go_list <- unlist(strsplit(go_terms, "\\|"))
+  data.frame(gene_id = gene_id, go_id = go_list, stringsAsFactors = FALSE)
+}
+
+# Apply the function to each row and combine the results
+expanded_data <- data %>%
+  rowwise() %>%
+  do(split_go_terms(.$gene_id, .$merged_go_ids)) %>%
+  ungroup()
+
+# Write the expanded data to a new CSV file
+write.csv(expanded_data, "exp_go_terms.csv", row.names = FALSE, quote = FALSE)
+
+
+
+# Load necessary libraries
+library(clusterProfiler)
+library(DOSE)
+library(GO.db)
+library(ggplot2)
+
+
+# Get all GO terms
+go_terms <- keys(GO.db, keytype = "GOID")
+
+# Get GO term names and ontology
+go_info <- select(GO.db, keys = go_terms, columns = c("TERM", "ONTOLOGY"), keytype = "GOID")
+
+# Create a data frame with GO terms, their names, and ontology
+go_pathway_names <- data.frame(GOterm = go_info$GOID, PathwayName = go_info$TERM, Ontology = go_info$ONTOLOGY, stringsAsFactors = FALSE)
+
+# Write the data frame to a CSV file
+write.csv(go_pathway_names, "go_pathway_names.csv", row.names = FALSE)
+
+#read in term2gene file
+TERM2GENE <-read.csv("exp_go_terms.csv", header = TRUE)
+
+go_pathway_names <-read.csv("go_pathway_names.csv", header = TRUE)
+
+
+##### Comparing across up/down and across pops
+kegg_degs <-read.csv("kegg_degs.csv", header = TRUE)
+#I don't think this works bc of the ont part
+all_go <- compareCluster(gene_id~direction+pop,
+                         data = kegg_degs, fun = enricher,
+                         #pvalueCutoff = 1, 
+                         #qvalueCutoff = 1,
+                         TERM2GENE = TERM2GENE, 
+                         TERM2NAME = go_pathway_names,
+                         minGSSize = 1,
+                         maxGSSize=10000) 
+
+all_go_df <- as.data.frame(all_go)
+write.xlsx(all_go_df, file = 'go_enrichment_comparison.xlsx')
+
+dotplot(ekdegs)
+
+dotplot(
+  all_go,
+  x = "pop",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "",
+  by = "geneRatio",
+  size = "geneRatio",
+  #includeAll = TRUE,
+  label_format = 45,
+  facet = "direction"
+)
+
+term2gene_bp <- TERM2GENE[TERM2GENE$Pathway %in% go_pathway_names$GOterm[go_pathway_names$Ontology == "BP"], ]
+term2gene_mf <- TERM2GENE[TERM2GENE$Pathway %in% go_pathway_names$GOterm[go_pathway_names$Ontology == "MF"], ]
+term2gene_cc <- TERM2GENE[TERM2GENE$Pathway %in% go_pathway_names$GOterm[go_pathway_names$Ontology == "CC"], ]
+
+term2name_bp <- go_pathway_names[go_pathway_names$Ontology == "BP", c("GOterm", "PathwayName")]
+term2name_mf <- go_pathway_names[go_pathway_names$Ontology == "MF", c("GOterm", "PathwayName")]
+term2name_cc <- go_pathway_names[go_pathway_names$Ontology == "CC", c("GOterm", "PathwayName")]
+
+write.table(term2gene_bp, file = "term2gene_bp", sep = "\t", quote = F, row.names = F)
+write.table(term2gene_mf, file = "term2gene_mf", sep = "\t", quote = F, row.names = F)
+write.table(term2gene_cc, file = "term2gene_cc", sep = "\t", quote = F, row.names = F)
+
+write.table(term2name_bp, file = "term2name_bp", sep = "\t", quote = F, row.names = F)
+write.table(term2name_mf, file = "term2name_mf", sep = "\t", quote = F, row.names = F)
+write.table(term2name_cc, file = "term2name_cc", sep = "\t", quote = F, row.names = F)
+
+#### Read in term2gene and term2name files
+term2gene_bp <- read.table("term2gene_bp", sep = "\t", header = TRUE, quote = "", stringsAsFactors = FALSE)
+term2gene_mf <- read.table("term2gene_mf", sep = "\t", header = TRUE, quote = "", stringsAsFactors = FALSE)
+term2gene_cc <- read.table("term2gene_cc", sep = "\t", header = TRUE, quote = "", stringsAsFactors = FALSE)
+
+term2name_bp <- read.table("term2name_bp", sep = "\t", header = TRUE, quote = "", stringsAsFactors = FALSE)
+term2name_mf <- read.table("term2name_mf", sep = "\t", header = TRUE, quote = "", stringsAsFactors = FALSE)
+term2name_cc <- read.table("term2name_cc", sep = "\t", header = TRUE, quote = "", stringsAsFactors = FALSE)
+
+
+
+# Run compareCluster separately for each
+go_bp <- compareCluster(
+  gene_id ~ direction + pop,
+  data = kegg_degs,
+  fun = enricher,
+  TERM2GENE = term2gene_bp,
+  TERM2NAME = term2name_bp,
+  minGSSize = 1,
+  maxGSSize = 10000)
+
+go_mf <- compareCluster(
+  gene_id ~ direction + pop,
+  data = kegg_degs,
+  fun = enricher,
+  TERM2GENE = term2gene_mf,
+  TERM2NAME = term2name_mf,
+  minGSSize = 1,
+  maxGSSize = 10000)
+
+go_cc <- compareCluster(
+  gene_id ~ direction + pop,
+  data = kegg_degs,
+  fun = enricher,
+  TERM2GENE = term2gene_cc,
+  TERM2NAME = term2name_cc,
+  minGSSize = 1,
+  maxGSSize = 10000)
+
+#reorder the clusters so they aren't in alphabetical order when you plot them
+# Define your desired order
+
+desired_order <- c("Preble", "Boone", "Scott", "Wilson1", 
+                   "Wilson2", "Rutherford")
+
+# Set the factor levels of Cluster to your desired order
+go_mf@compareClusterResult$pop <- factor(go_mf@compareClusterResult$pop, levels = desired_order)
+go_bp@compareClusterResult$pop <- factor(go_bp@compareClusterResult$pop, levels = desired_order)
+go_cc@compareClusterResult$pop <- factor(go_cc@compareClusterResult$pop, levels = desired_order)
+
+desired_order2 <- c("up", "down")
+
+go_mf@compareClusterResult$direction <- factor(go_mf@compareClusterResult$direction, levels = desired_order2)
+go_bp@compareClusterResult$direction <- factor(go_bp@compareClusterResult$direction, levels = desired_order2)
+go_cc@compareClusterResult$direction <- factor(go_cc@compareClusterResult$direction, levels = desired_order2)
+
+
+dotplot(go_bp, x = "pop", color = "p.adjust", showCategory = 10,
+ font.size = 12, title = "Go Enrichment Biological Processes",
+  by = "geneRatio", size = "count", label_format = 60,
+  facet = "direction") + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+
+dotplot(
+  go_mf,
+  x = "pop",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "GO Enrchment Molecular Functions",
+  by = "geneRatio",
+  size = "count",
+  #includeAll = TRUE,
+  label_format = 60,
+  facet = "direction") + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+
+dotplot(
+  go_cc,
+  x = "pop",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Go Enrichment Cellular Components",
+  by = "geneRatio",
+  size = "count",
+  #includeAll = TRUE,
+  label_format = 60,
+  facet = "direction")  + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 0))
+
+#convert to dataframes and export 
+bp_df <- as.data.frame(go_bp)
+write.csv(bp_df, file = 'go_enrichment_comparison_bp_final.csv')
+
+mf_df <- as.data.frame(go_mf)
+write.csv(mf_df, file = 'go_enrichment_comparison_mf_final.csv')
+
+cc_df <- as.data.frame(go_cc)
+write.csv(cc_df, file = 'go_enrichment_comparison_cc_final.csv')
+
+#export dotplots as jpegs
+p <- dotplot(go_bp, x = "pop", color = "p.adjust", showCategory = 10,
+             font.size = 12, title = "Go Enrichment Biological Processes",
+             by = "geneRatio", size = "count", label_format = 60,
+             facet = "direction") + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title.x = element_blank())
+
+ggsave("GO_BP.jpeg", plot = p,
+       device = "jpeg", dpi = 600,
+       width = 8, height =8, units = "in")
+
+#export dotplots as jpegs
+q <- dotplot(go_mf, x = "pop", color = "p.adjust", showCategory = 10,
+             font.size = 12, title = "Go Enrichment Molecular Function",
+             by = "geneRatio", size = "count", label_format = 60,
+             facet = "direction") + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title.x = element_blank())
+
+ggsave("GO_MF.jpeg", plot = q,
+       device = "jpeg", dpi = 600,
+       width = 8, height =10, units = "in")
+
+r <- dotplot(go_cc, x = "pop", color = "p.adjust", showCategory = 10,
+             font.size = 12, title = "Go Enrichment Cellular Component",
+             by = "geneRatio", size = "count", label_format = 60,
+             facet = "direction") + 
+  theme(axis.text.x = element_text(angle = -45, hjust = 0),
+        panel.grid = element_blank(),
+        axis.title.x = element_blank())
+
+ggsave("GO_CC.jpeg", plot = r,
+       device = "jpeg", dpi = 600,
+       width = 8, height =8, units = "in")
+
+
+### see how many genes have go BP assignments
+
+# all unique input DEG genes
+input_genes <- unique(kegg_degs$gene_id)
+
+# genes with GO Biological Process assignments
+go_bp_genes <- unique(term2gene_bp$GID)
+
+# genes in your input list that have BP assignments
+assigned_bp_genes <- intersect(input_genes, go_bp_genes)
+
+cat("Input genes:", length(input_genes), "\n")
+cat("Genes with GO BP assignments:", length(assigned_bp_genes), "\n")
+cat("Percent with GO BP assignments:",
+    round(100 * length(assigned_bp_genes) / length(input_genes), 1), "%\n")
+
+# this is for the comparison lists for each pop
+# I wanted to see if running the enrichment turned up different results running
+#it this way and the way above. it shouldn't but we shall see
+
+#read in up/down comparison for each pop
+preb_list <-read.csv("kegg_degs_preb.csv", header = TRUE)
+boon_list <-read.csv("kegg_degs_boon.csv", header = TRUE)
+scot_list <-read.csv("kegg_degs_scot.csv", header = TRUE)
+fg_list <-read.csv("kegg_degs_wils_fg.csv", header = TRUE)
+rw_list <-read.csv("kegg_degs_wils_rw.csv", header = TRUE)
+ruth_list <-read.csv("kegg_degs_ruth.csv", header = TRUE)
+
+
+ruth_bp <- compareCluster(gene_id~direction+pop,
+                       data = ruth_list, fun = enricher,
+                       #pvalueCutoff = 1, 
+                       #qvalueCutoff = 1,
+                       TERM2GENE = term2gene_bp,
+                       TERM2NAME = term2name_bp,
+                       minGSSize = 1,
+                       maxGSSize=1000)
+
+ruth_mf <- compareCluster(gene_id~direction+pop,
+                       data = ruth_list, fun = enricher,
+                       #pvalueCutoff = 1, 
+                       #qvalueCutoff = 1,
+                       TERM2GENE = term2gene_mf,
+                       TERM2NAME = term2name_mf,
+                       minGSSize = 1,
+                       maxGSSize=1000)
+
+ruth_cc <- compareCluster(gene_id~direction+pop,
+                       data = ruth_list, fun = enricher,
+                       #pvalueCutoff = 1, 
+                       #qvalueCutoff = 1,
+                       TERM2GENE = term2gene_cc,
+                       TERM2NAME = term2name_cc,
+                       minGSSize = 1,
+                       maxGSSize=1000)
+
+rw_bp <- compareCluster(gene_id~direction+pop,
+                          data = rw_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_bp,
+                          TERM2NAME = term2name_bp,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+rw_mf <- compareCluster(gene_id~direction+pop,
+                          data = rw_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_mf,
+                          TERM2NAME = term2name_mf,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+rw_cc <- compareCluster(gene_id~direction+pop,
+                          data = rw_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_cc,
+                          TERM2NAME = term2name_cc,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+fg_bp <- compareCluster(gene_id~direction+pop,
+                          data = fg_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_bp,
+                          TERM2NAME = term2name_bp,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+fg_mf <- compareCluster(gene_id~direction+pop,
+                          data = fg_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_mf,
+                          TERM2NAME = term2name_mf,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+fg_cc <- compareCluster(gene_id~direction+pop,
+                          data = fg_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_cc,
+                          TERM2NAME = term2name_cc,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+scot_bp <- compareCluster(gene_id~direction+pop,
+                          data = scot_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_bp,
+                          TERM2NAME = term2name_bp,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+scot_mf <- compareCluster(gene_id~direction+pop,
+                          data = scot_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_mf,
+                          TERM2NAME = term2name_mf,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+scot_cc <- compareCluster(gene_id~direction+pop,
+                          data = scot_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_cc,
+                          TERM2NAME = term2name_cc,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+boon_bp <- compareCluster(gene_id~direction+pop,
+                          data = boon_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_bp,
+                          TERM2NAME = term2name_bp,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+boon_mf <- compareCluster(gene_id~direction+pop,
+                          data = boon_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_mf,
+                          TERM2NAME = term2name_mf,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+boon_cc <- compareCluster(gene_id~direction+pop,
+                          data = boon_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_cc,
+                          TERM2NAME = term2name_cc,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+preb_bp <- compareCluster(gene_id~direction+pop,
+                          data = preb_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_bp,
+                          TERM2NAME = term2name_bp,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+pren_mf <- compareCluster(gene_id~direction+pop,
+                          data = preb_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_mf,
+                          TERM2NAME = term2name_mf,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+preb_cc <- compareCluster(gene_id~direction+pop,
+                          data = preb_list, fun = enricher,
+                          #pvalueCutoff = 1, 
+                          #qvalueCutoff = 1,
+                          TERM2GENE = term2gene_cc,
+                          TERM2NAME = term2name_cc,
+                          minGSSize = 1,
+                          maxGSSize=1000)
+
+
+
+
+dotplot(
+  ruth_bp,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Ruth BP",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  ruth_mf,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Ruth MF",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  ruth_cc,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Ruth CC",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+
+dotplot(
+  rw_bp,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Rw BP",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  rw_mf,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Rw MF",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  rw_cc,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "Rw CC",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+
+dotplot(
+  fg_bp,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "fg BP",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  fg_mf,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "fg MF",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  fg_cc,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "fg CC",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+
+dotplot(
+  scot_bp,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "scot BP",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  scot_mf,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "scot MF",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  scot_cc,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "scot CC",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+
+dotplot(
+  boon_mf,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "boon MF",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  boon_cc,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "boon CC",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+
+
+dotplot(
+  pren_mf,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "preb MF",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+dotplot(
+  preb_cc,
+  x = "direction",
+  color = "p.adjust",
+  showCategory = 10,
+  #split = "pop",
+  font.size = 12,
+  title = "preb CC",
+  by = "geneRatio",
+  size = "RichFactor",
+  #includeAll = TRUE,
+  label_format = 45,
+  #facet = "pop"
+)
+
+ruth_bp_df <- as.data.frame(ruth_bp)
+write.csv(ruth_bp_df, file = 'ruth_bp_comparison_enrichment.csv')
+
+ruth_mf_df <- as.data.frame(ruth_mf)
+write.csv(ruth_mf_df, file = 'ruth_mf_comparison_enrichment.csv')
+
+ruth_cc_df <- as.data.frame(ruth_cc)
+write.csv(ruth_cc_df, file = 'ruth_cc_comparison_enrichment.csv')
+
+rw_bp_df <- as.data.frame(rw_bp)
+write.csv(rw_bp_df, file = 'rw_bp_comparison_enrichment.csv')
+
+rw_mf_df <- as.data.frame(rw_mf)
+write.csv(rw_mf_df, file = 'rw_mf_comparison_enrichment.csv')
+
+rw_cc_df <- as.data.frame(rw_cc)
+write.csv(rw_cc_df, file = 'rw_cc_comparison_enrichment.csv')
+
+fg_bp_df <- as.data.frame(fg_bp)
+write.csv(fg_bp_df, file = 'fg_bp_comparison_enrichment.csv')
+
+fg_mf_df <- as.data.frame(fg_mf)
+write.csv(fg_mf_df, file = 'fg_mf_comparison_enrichment.csv')
+
+fg_cc_df <- as.data.frame(fg_cc)
+write.csv(fg_cc_df, file = 'fg_cc_comparison_enrichment.csv')
+
+scot_bp_df <- as.data.frame(scot_bp)
+write.csv(scot_bp_df, file = 'scot_bp_comparison_enrichment.csv')
+
+scot_mf_df <- as.data.frame(scot_mf)
+write.csv(scot_mf_df, file = 'scot_mf_comparison_enrichment.csv')
+
+scot_cc_df <- as.data.frame(scot_cc)
+write.csv(scot_cc_df, file = 'scot_cc_comparison_enrichment.csv')
+
+boon_mf_df <- as.data.frame(boon_mf)
+write.csv(boon_mf_df, file = 'boon_mf_comparison_enrichment.csv')
+
+boon_cc_df <- as.data.frame(boon_cc)
+write.csv(boon_cc_df, file = 'boon_cc_comparison_enrichment.csv')
+
+preb_mf_df <- as.data.frame(pren_mf)
+write.csv(preb_mf_df, file = 'preb_mf_comparison_enrichment.csv')
+
+preb_cc_df <- as.data.frame(preb_cc)
+write.csv(preb_cc_df, file = 'preb_cc_comparison_enrichment.csv')
